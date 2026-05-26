@@ -1,0 +1,130 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+ *  Reset doux + intégration iOS standalone
+ * ============================================================ */
+
+:root {
+  color-scheme: light;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-surface text-navy-900 font-sans antialiased;
+  font-feature-settings: 'cv11', 'ss01';
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: none;
+}
+
+* {
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font-family: inherit;
+}
+
+/* Scrollbar discrète */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(15, 39, 66, 0.15);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(15, 39, 66, 0.3);
+}
+
+/* ============================================================
+ *  Composants utilitaires
+ * ============================================================ */
+@layer components {
+  .card {
+    @apply bg-white rounded-2xl shadow-soft border border-navy-100/60;
+  }
+  .card-pad {
+    @apply p-5;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-medium
+           transition-all duration-150 active:scale-[0.98] disabled:opacity-50
+           disabled:cursor-not-allowed text-sm;
+  }
+  .btn-primary {
+    @apply btn bg-navy-900 text-white hover:bg-navy-800 shadow-soft;
+  }
+  .btn-accent {
+    @apply btn bg-accent-500 text-white hover:bg-accent-600 shadow-cta;
+  }
+  .btn-ghost {
+    @apply btn bg-white border border-navy-100 text-navy-800 hover:bg-navy-50;
+  }
+  .input {
+    @apply w-full bg-white border border-navy-100 rounded-xl px-3.5 py-2.5 text-sm
+           text-navy-900 placeholder:text-navy-300 focus:outline-none
+           focus:ring-2 focus:ring-accent-400/40 focus:border-accent-400 transition;
+  }
+  .label {
+    @apply block text-xs font-semibold uppercase tracking-wider text-navy-500 mb-1.5;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium;
+  }
+  .nav-link {
+    @apply flex items-center gap-3 px-3.5 py-3 rounded-xl text-sm font-medium
+           text-navy-300 hover:text-white hover:bg-white/5 transition;
+  }
+  .nav-link-active {
+    @apply bg-white/10 text-white shadow-inset-soft;
+  }
+}
+
+/* ============================================================
+ *  react-big-calendar — override pour matcher la charte
+ * ============================================================ */
+.rbc-calendar {
+  @apply font-sans text-sm;
+}
+.rbc-toolbar {
+  @apply mb-4 flex-wrap gap-2;
+}
+.rbc-toolbar button {
+  @apply text-navy-700 border-navy-100 rounded-lg;
+}
+.rbc-toolbar button.rbc-active {
+  @apply bg-navy-900 text-white border-navy-900;
+}
+.rbc-month-view,
+.rbc-time-view {
+  @apply rounded-2xl border-navy-100 overflow-hidden bg-white;
+}
+.rbc-header {
+  @apply bg-surface-subtle text-navy-700 font-semibold py-2 border-navy-100;
+}
+.rbc-day-bg + .rbc-day-bg,
+.rbc-month-row + .rbc-month-row {
+  @apply border-navy-100;
+}
+.rbc-today {
+  @apply bg-accent-50;
+}
+.rbc-event {
+  @apply bg-navy-800 border-navy-900 text-white rounded-md text-xs px-2 py-0.5;
+}
+.rbc-event.rbc-selected {
+  @apply bg-accent-500 border-accent-600;
+}
+.rbc-off-range-bg {
+  @apply bg-surface-subtle;
+}
