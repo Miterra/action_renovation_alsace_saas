@@ -1,9 +1,9 @@
 import { useMemo, useState } from 'react'
 import { Calendar as RBCalendar, dateFnsLocalizer } from 'react-big-calendar'
-import { format, parse, startOfWeek, getDay, parseISO } from 'date-fns'
+import { format, parse, startOfWeek, getDay, parseISO, subDays, formatISO } from 'date-fns'
 import { fr } from 'date-fns/locale'
 import 'react-big-calendar/lib/css/react-big-calendar.css'
-import { Plus, MapPin, Phone, X, Trash2 } from 'lucide-react'
+import { Plus, MapPin, Phone, X, Trash2, Pencil, Bell } from 'lucide-react'
 import { useApp } from '../context/AppContext.jsx'
 
 const locales = { 'fr-FR': fr }
@@ -28,15 +28,34 @@ const messages = {
   next: 'Suivant',
   yesterday: 'Hier',
   tomorrow: 'Demain',
-  today: 'Aujourd\'hui',
+  today: "Aujourd'hui",
   agenda: 'Agenda',
   noEventsInRange: 'Aucun RDV sur cette période.',
   showMore: (n) => `+ ${n} autres`,
 }
 
+/** Calcule le rappel par défaut : la veille à 20h, dans le fuseau local du navigateur. */
+function defaultReminderAt(startISO) {
+  const start = parseISO(startISO)
+  const prevDay = subDays(start, 1)
+  prevDay.setHours(20, 0, 0, 0)
+  return prevDay.toISOString()
+}
+
+/** Convertit un ISO UTC vers les valeurs date+heure locales pour des inputs HTML. */
+function isoToLocalParts(iso) {
+  if (!iso) return { day: '', time: '' }
+  const d = parseISO(iso)
+  return {
+    day: format(d, 'yyyy-MM-dd'),
+    time: format(d, 'HH:mm'),
+  }
+}
+
 export default function Calendar() {
-  const { appointments, addAppointment, deleteAppointment } = useApp()
+  const { appointments, addAppointment, updateAppointment, deleteAppointment } = useApp()
   const [creating, setCreating] = useState(false)
+  const [editing, setEditing] = useState(null) // RDV en cours d'édition
   const [selected, setSelected] = useState(null)
   const [view, setView] = useState('month')
   const [date, setDate] = useState(new Date())
@@ -92,12 +111,21 @@ export default function Calendar() {
         </div>
       </div>
 
-      {creating && (
-        <NewAppointmentModal
-          onClose={() => setCreating(false)}
-          onSave={(payload) => {
-            addAppointment(payload)
+      {(creating || editing) && (
+        <AppointmentFormModal
+          appointment={editing}
+          onClose={() => {
             setCreating(false)
+            setEditing(null)
+          }}
+          onSave={async (payload) => {
+            if (editing) {
+              await updateAppointment(editing.id, payload)
+            } else {
+              await addAppointment(payload)
+            }
+            setCreating(false)
+            setEditing(null)
           }}
         />
       )}
@@ -106,8 +134,12 @@ export default function Calendar() {
         <AppointmentDetailModal
           appointment={selected}
           onClose={() => setSelected(null)}
-          onDelete={(id) => {
-            deleteAppointment(id)
+          onEdit={() => {
+            setEditing(selected)
+            setSelected(null)
+          }}
+          onDelete={async (id) => {
+            await deleteAppointment(id)
             setSelected(null)
           }}
         />
@@ -116,18 +148,70 @@ export default function Calendar() {
   )
 }
 
-function NewAppointmentModal({ onClose, onSave }) {
-  const [form, setForm] = useState({
-    clientName: '',
-    address: '',
-    phone: '',
-    day: format(new Date(), 'yyyy-MM-dd'),
-    time: '09:00',
-    duration: '60',
-    notes: '',
-  })
+/* ============================================================
+ *  Modal Création/Édition de RDV
+ * ============================================================ */
+function AppointmentFormModal({ appointment, onClose, onSave }) {
+  const isEdit = Boolean(appointment)
+  const initial = useMemo(() => {
+    if (!appointment) {
+      const today = format(new Date(), 'yyyy-MM-dd')
+      return {
+        clientName: '',
+        address: '',
+        phone: '',
+        day: today,
+        time: '09:00',
+        duration: '60',
+        notes: '',
+        reminderDay: format(subDays(new Date(today + 'T09:00'), 1), 'yyyy-MM-dd'),
+        reminderTime: '20:00',
+      }
+    }
+    const start = isoToLocalParts(appointment.date)
+    const durMin = Math.round(
+      (parseISO(appointment.endDate || appointment.date).getTime() -
+        parseISO(appointment.date).getTime()) /
+        60_000,
+    )
+    const reminder = isoToLocalParts(
+      appointment.reminderAt || defaultReminderAt(appointment.date),
+    )
+    return {
+      clientName: appointment.clientName,
+      address: appointment.address || '',
+      phone: appointment.phone || '',
+      day: start.day,
+      time: start.time,
+      duration: String(durMin || 60),
+      notes: appointment.notes || '',
+      reminderDay: reminder.day,
+      reminderTime: reminder.time,
+    }
+  }, [appointment])
+
+  const [form, setForm] = useState(initial)
+  // Quand on change la date/heure du RDV (mode création seulement),
+  // on recalcule le rappel par défaut automatiquement
+  const [reminderTouched, setReminderTouched] = useState(isEdit)
 
   function update(k, v) {
+    setForm((f) => {
+      const next = { ...f, [k]: v }
+      // Si on change la date/heure du RDV et que le rappel n'a pas été touché,
+      // on aligne le rappel à "la veille à 20h"
+      if ((k === 'day' || k === 'time') && !reminderTouched) {
+        const startISO = `${k === 'day' ? v : f.day}T${k === 'time' ? v : f.time}:00`
+        const remParts = isoToLocalParts(defaultReminderAt(startISO))
+        next.reminderDay = remParts.day
+        next.reminderTime = remParts.time
+      }
+      return next
+    })
+  }
+
+  function updateReminder(k, v) {
+    setReminderTouched(true)
     setForm((f) => ({ ...f, [k]: v }))
   }
 
@@ -136,6 +220,7 @@ function NewAppointmentModal({ onClose, onSave }) {
     if (!form.clientName) return
     const start = new Date(`${form.day}T${form.time}:00`)
     const end = new Date(start.getTime() + Number(form.duration) * 60_000)
+    const reminder = new Date(`${form.reminderDay}T${form.reminderTime}:00`)
     onSave({
       clientName: form.clientName,
       address: form.address,
@@ -143,11 +228,12 @@ function NewAppointmentModal({ onClose, onSave }) {
       date: start.toISOString(),
       endDate: end.toISOString(),
       notes: form.notes,
+      reminderAt: reminder.toISOString(),
     })
   }
 
   return (
-    <Modal onClose={onClose} title="Nouveau rendez-vous client">
+    <Modal title={isEdit ? 'Modifier le rendez-vous' : 'Nouveau rendez-vous client'} onClose={onClose}>
       <form onSubmit={submit} className="space-y-3.5">
         <div>
           <label className="label">Nom du client *</label>
@@ -214,6 +300,38 @@ function NewAppointmentModal({ onClose, onSave }) {
             <option value="180">3 h</option>
           </select>
         </div>
+
+        {/* Bloc Rappel */}
+        <div className="border border-navy-100 bg-navy-50/30 rounded-xl p-3 space-y-2.5">
+          <div className="flex items-center gap-2">
+            <Bell className="w-4 h-4 text-accent-600" />
+            <span className="text-sm font-semibold text-navy-900">Rappel push</span>
+            <span className="text-[11px] text-navy-500">par défaut : la veille à 20 h</span>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label">Date du rappel</label>
+              <input
+                className="input"
+                type="date"
+                value={form.reminderDay}
+                onChange={(e) => updateReminder('reminderDay', e.target.value)}
+                required
+              />
+            </div>
+            <div>
+              <label className="label">Heure du rappel</label>
+              <input
+                className="input"
+                type="time"
+                value={form.reminderTime}
+                onChange={(e) => updateReminder('reminderTime', e.target.value)}
+                required
+              />
+            </div>
+          </div>
+        </div>
+
         <div>
           <label className="label">Notes</label>
           <textarea
@@ -228,7 +346,7 @@ function NewAppointmentModal({ onClose, onSave }) {
             Annuler
           </button>
           <button type="submit" className="btn-accent flex-1">
-            Enregistrer
+            {isEdit ? 'Enregistrer' : 'Créer le RDV'}
           </button>
         </div>
       </form>
@@ -236,16 +354,32 @@ function NewAppointmentModal({ onClose, onSave }) {
   )
 }
 
-function AppointmentDetailModal({ appointment, onClose, onDelete }) {
+/* ============================================================
+ *  Modal Détail RDV
+ * ============================================================ */
+function AppointmentDetailModal({ appointment, onClose, onEdit, onDelete }) {
+  const reminderText = appointment.reminderAt
+    ? format(parseISO(appointment.reminderAt), "EEEE d MMM 'à' HH'h'mm", { locale: fr })
+    : 'Aucun rappel programmé'
+
   return (
-    <Modal onClose={onClose} title={appointment.clientName}>
+    <Modal title={appointment.clientName} onClose={onClose}>
       <div className="space-y-3 text-sm">
         <div className="bg-navy-50 rounded-xl px-4 py-3">
           <p className="text-xs font-semibold uppercase text-navy-500 tracking-wider">Quand</p>
           <p className="font-medium text-navy-900 mt-0.5">
-            {format(parseISO(appointment.date), 'EEEE d MMMM yyyy · HH\'h\'mm', { locale: fr })}
+            {format(parseISO(appointment.date), "EEEE d MMMM yyyy · HH'h'mm", { locale: fr })}
           </p>
         </div>
+
+        <div className="bg-accent-50 rounded-xl px-4 py-3 flex items-start gap-3">
+          <Bell className="w-4 h-4 text-accent-600 mt-0.5 shrink-0" />
+          <div>
+            <p className="text-xs font-semibold uppercase text-accent-700 tracking-wider">Rappel</p>
+            <p className="font-medium text-navy-900 mt-0.5 capitalize">{reminderText}</p>
+          </div>
+        </div>
+
         {appointment.address && (
           <a
             href={`https://maps.google.com/?q=${encodeURIComponent(appointment.address)}`}
@@ -272,12 +406,17 @@ function AppointmentDetailModal({ appointment, onClose, onDelete }) {
             <p className="text-navy-700 whitespace-pre-wrap">{appointment.notes}</p>
           </div>
         )}
-        <button
-          onClick={() => onDelete(appointment.id)}
-          className="btn w-full mt-2 bg-red-50 text-red-600 hover:bg-red-100"
-        >
-          <Trash2 className="w-4 h-4" /> Supprimer le RDV
-        </button>
+        <div className="grid grid-cols-2 gap-2 pt-2">
+          <button onClick={onEdit} className="btn-primary">
+            <Pencil className="w-4 h-4" /> Modifier
+          </button>
+          <button
+            onClick={() => onDelete(appointment.id)}
+            className="btn bg-red-50 text-red-600 hover:bg-red-100"
+          >
+            <Trash2 className="w-4 h-4" /> Supprimer
+          </button>
+        </div>
       </div>
     </Modal>
   )

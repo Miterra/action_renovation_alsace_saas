@@ -7,12 +7,13 @@ import {
   Flame,
   Circle,
   Bell,
+  Pencil,
 } from 'lucide-react'
 import { useApp } from '../context/AppContext.jsx'
 import { format, isPast, parseISO, isToday, isTomorrow } from 'date-fns'
 import { fr } from 'date-fns/locale'
-// NB : les rappels (15 min avant) sont désormais envoyés côté serveur par
-// l'Edge Function Supabase `send-reminders` qui s'exécute toutes les minutes.
+// NB : les rappels (15 min avant) sont envoyés côté serveur par l'Edge
+// Function Supabase `send-reminders` qui s'exécute toutes les minutes.
 
 const FILTERS = [
   { key: 'all', label: 'Toutes' },
@@ -22,8 +23,9 @@ const FILTERS = [
 ]
 
 export default function Tasks() {
-  const { tasks, addTask, toggleTask, deleteTask } = useApp()
+  const { tasks, addTask, updateTask, toggleTask, deleteTask } = useApp()
   const [creating, setCreating] = useState(false)
+  const [editing, setEditing] = useState(null) // tâche en cours d'édition
   const [filter, setFilter] = useState('open')
 
   const filtered = useMemo(() => {
@@ -76,25 +78,49 @@ export default function Tasks() {
       ) : (
         <div className="card divide-y divide-navy-100">
           {filtered.map((t) => (
-            <TaskRow key={t.id} task={t} onToggle={toggleTask} onDelete={deleteTask} />
+            <TaskRow
+              key={t.id}
+              task={t}
+              onToggle={toggleTask}
+              onEdit={() => setEditing(t)}
+              onDelete={deleteTask}
+            />
           ))}
         </div>
       )}
 
-      {creating && (
-        <NewTaskModal onClose={() => setCreating(false)} onSave={(p) => { addTask(p); setCreating(false) }} />
+      {(creating || editing) && (
+        <TaskFormModal
+          task={editing}
+          onClose={() => {
+            setCreating(false)
+            setEditing(null)
+          }}
+          onSave={async (payload) => {
+            if (editing) {
+              await updateTask(editing.id, payload)
+            } else {
+              await addTask(payload)
+            }
+            setCreating(false)
+            setEditing(null)
+          }}
+        />
       )}
     </div>
   )
 }
 
-function TaskRow({ task, onToggle, onDelete }) {
+function TaskRow({ task, onToggle, onEdit, onDelete }) {
   const due = parseISO(task.dueDate)
   const overdue = !task.done && isPast(due)
   return (
     <div className="flex items-start gap-3 px-5 py-4 group">
       <button
-        onClick={() => onToggle(task.id)}
+        onClick={(e) => {
+          e.stopPropagation()
+          onToggle(task.id)
+        }}
         className={`w-6 h-6 rounded-full border-2 shrink-0 mt-0.5 flex items-center justify-center transition
           ${task.done
             ? 'bg-emerald-500 border-emerald-500 text-white'
@@ -103,7 +129,10 @@ function TaskRow({ task, onToggle, onDelete }) {
       >
         {task.done && <Check className="w-3.5 h-3.5" strokeWidth={3} />}
       </button>
-      <div className="flex-1 min-w-0">
+      <button
+        onClick={onEdit}
+        className="flex-1 min-w-0 text-left hover:bg-navy-50/40 -mx-2 px-2 py-0.5 rounded-lg transition"
+      >
         <div className="flex items-center gap-2 flex-wrap">
           <p
             className={`font-medium text-sm ${
@@ -126,14 +155,23 @@ function TaskRow({ task, onToggle, onDelete }) {
         >
           {formatDue(task.dueDate)}
         </p>
-      </div>
-      <button
-        onClick={() => onDelete(task.id)}
-        className="opacity-0 group-hover:opacity-100 transition p-1.5 rounded-lg hover:bg-red-50 text-red-500"
-        aria-label="Supprimer"
-      >
-        <Trash2 className="w-4 h-4" />
       </button>
+      <div className="flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition">
+        <button
+          onClick={onEdit}
+          className="p-1.5 rounded-lg hover:bg-navy-100 text-navy-500"
+          aria-label="Modifier"
+        >
+          <Pencil className="w-4 h-4" />
+        </button>
+        <button
+          onClick={() => onDelete(task.id)}
+          className="p-1.5 rounded-lg hover:bg-red-50 text-red-500"
+          aria-label="Supprimer"
+        >
+          <Trash2 className="w-4 h-4" />
+        </button>
+      </div>
     </div>
   )
 }
@@ -154,14 +192,32 @@ function PriorityBadge({ priority }) {
   return null
 }
 
-function NewTaskModal({ onClose, onSave }) {
-  const [form, setForm] = useState({
-    title: '',
-    description: '',
-    day: format(new Date(), 'yyyy-MM-dd'),
-    time: '17:00',
-    priority: 'medium',
-  })
+/* ============================================================
+ *  Modal Création / Édition de tâche
+ * ============================================================ */
+function TaskFormModal({ task, onClose, onSave }) {
+  const isEdit = Boolean(task)
+  const initial = useMemo(() => {
+    if (!task) {
+      return {
+        title: '',
+        description: '',
+        day: format(new Date(), 'yyyy-MM-dd'),
+        time: '17:00',
+        priority: 'medium',
+      }
+    }
+    const due = parseISO(task.dueDate)
+    return {
+      title: task.title,
+      description: task.description || '',
+      day: format(due, 'yyyy-MM-dd'),
+      time: format(due, 'HH:mm'),
+      priority: task.priority || 'medium',
+    }
+  }, [task])
+
+  const [form, setForm] = useState(initial)
 
   function submit(e) {
     e.preventDefault()
@@ -173,13 +229,10 @@ function NewTaskModal({ onClose, onSave }) {
       dueDate,
       priority: form.priority,
     })
-    // Le rappel 15 min avant est envoyé automatiquement par l'Edge Function
-    // `send-reminders` (Supabase, cron toutes les minutes) si l'utilisateur a
-    // activé les notifications dans la TopBar.
   }
 
   return (
-    <Modal title="Nouvelle tâche" onClose={onClose}>
+    <Modal title={isEdit ? 'Modifier la tâche' : 'Nouvelle tâche'} onClose={onClose}>
       <form onSubmit={submit} className="space-y-3.5">
         <div>
           <label className="label">Titre *</label>
@@ -241,7 +294,7 @@ function NewTaskModal({ onClose, onSave }) {
           <div className="flex-1">
             <p className="text-sm font-medium text-navy-900">Rappel automatique</p>
             <p className="text-xs text-navy-500">
-              Tu recevras une notification 15 min avant l'échéance (push envoyé par le serveur, même app fermée).
+              Notification 15 min avant l'échéance (push envoyé par le serveur, même app fermée).
             </p>
           </div>
         </div>
@@ -250,7 +303,7 @@ function NewTaskModal({ onClose, onSave }) {
             Annuler
           </button>
           <button type="submit" className="btn-accent flex-1">
-            Créer la tâche
+            {isEdit ? 'Enregistrer' : 'Créer la tâche'}
           </button>
         </div>
       </form>
@@ -282,8 +335,8 @@ function Modal({ title, onClose, children }) {
 
 function formatDue(iso) {
   const d = parseISO(iso)
-  const t = format(d, 'HH\'h\'mm', { locale: fr })
+  const t = format(d, "HH'h'mm", { locale: fr })
   if (isToday(d)) return `Aujourd'hui · ${t}`
   if (isTomorrow(d)) return `Demain · ${t}`
-  return format(d, 'EEE d MMM · HH\'h\'mm', { locale: fr })
+  return format(d, "EEE d MMM · HH'h'mm", { locale: fr })
 }

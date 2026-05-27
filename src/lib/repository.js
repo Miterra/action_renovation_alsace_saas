@@ -19,16 +19,21 @@ const apptFromRow = (r) => ({
   date: r.start_at,
   endDate: r.end_at,
   notes: r.notes || '',
+  reminderAt: r.reminder_at || null,
 })
 
-const apptToRow = (a) => ({
-  client_name: a.clientName,
-  address: a.address || '',
-  phone: a.phone || '',
-  start_at: a.date,
-  end_at: a.endDate || a.date,
-  notes: a.notes || '',
-})
+const apptToRow = (a) => {
+  const row = {
+    client_name: a.clientName,
+    address: a.address || '',
+    phone: a.phone || '',
+    start_at: a.date,
+    end_at: a.endDate || a.date,
+    notes: a.notes || '',
+  }
+  if (a.reminderAt !== undefined) row.reminder_at = a.reminderAt
+  return row
+}
 
 const taskFromRow = (r) => ({
   id: r.id,
@@ -71,14 +76,18 @@ const supabaseRepo = {
   },
 
   async updateAppointment(id, patch) {
-    const row = apptToRow({ ...patch })
-    // Ne mettre à jour que les champs fournis
-    const cleaned = Object.fromEntries(
-      Object.entries(row).filter(([, v]) => v !== undefined && v !== ''),
-    )
+    // Ne mettre à jour que les champs explicitement fournis
+    const row = {}
+    if (patch.clientName !== undefined) row.client_name = patch.clientName
+    if (patch.address !== undefined) row.address = patch.address
+    if (patch.phone !== undefined) row.phone = patch.phone
+    if (patch.date !== undefined) row.start_at = patch.date
+    if (patch.endDate !== undefined) row.end_at = patch.endDate
+    if (patch.notes !== undefined) row.notes = patch.notes
+    if (patch.reminderAt !== undefined) row.reminder_at = patch.reminderAt
     const { data, error } = await supabase
       .from('appointments')
-      .update(cleaned)
+      .update(row)
       .eq('id', id)
       .select()
       .single()

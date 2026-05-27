@@ -256,8 +256,12 @@ Deno.serve(async (req: Request) => {
     const activeSubs = subs || []
 
     const now = new Date()
-    const windowEnd = new Date(now.getTime() + 15 * 60_000).toISOString()
-    const windowStart = new Date(now.getTime() - 60_000).toISOString()
+    // RDV : la notif est envoyée quand reminder_at est passé (fenêtre des 5 dernières minutes)
+    const rdvWindowStart = new Date(now.getTime() - 5 * 60_000).toISOString()
+    const rdvWindowEnd = now.toISOString()
+    // Tâches : T-15 min avant due_at (existant)
+    const taskWindowEnd = new Date(now.getTime() + 15 * 60_000).toISOString()
+    const taskWindowStart = new Date(now.getTime() - 60_000).toISOString()
 
     const out: Record<string, unknown> = {
       ok: true,
@@ -273,23 +277,28 @@ Deno.serve(async (req: Request) => {
       })
     }
 
-    // RDV à rappeler
+    // RDV à rappeler (basé sur reminder_at, pas start_at)
     const { data: rdvs } = await supabase
       .from('appointments')
-      .select('id, client_name, address, start_at')
+      .select('id, client_name, address, start_at, reminder_at')
       .eq('reminder_sent', false)
-      .gte('start_at', windowStart)
-      .lte('start_at', windowEnd)
+      .not('reminder_at', 'is', null)
+      .gte('reminder_at', rdvWindowStart)
+      .lte('reminder_at', rdvWindowEnd)
 
     ;(out.rdv as Record<string, number>).matched = (rdvs || []).length
     for (const r of rdvs || []) {
-      const time = new Date(r.start_at).toLocaleTimeString('fr-FR', {
+      const startDate = new Date(r.start_at)
+      const day = startDate.toLocaleDateString('fr-FR', {
+        weekday: 'long', day: 'numeric', month: 'long', timeZone: 'Europe/Paris',
+      })
+      const time = startDate.toLocaleTimeString('fr-FR', {
         hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Paris',
       })
       const payload = JSON.stringify({
         notification: {
-          title: `RDV ${time} — ${r.client_name}`,
-          body: r.address || 'Rendez-vous client dans 15 minutes.',
+          title: `RDV demain · ${r.client_name}`,
+          body: `${day} à ${time}${r.address ? ' — ' + r.address : ''}`,
           icon: '/logo.png',
           tag: `rdv-${r.id}`,
         },
@@ -302,14 +311,14 @@ Deno.serve(async (req: Request) => {
       await supabase.from('appointments').update({ reminder_sent: true }).eq('id', r.id)
     }
 
-    // Tâches à rappeler
+    // Tâches à rappeler (T-15 min)
     const { data: tasks } = await supabase
       .from('tasks')
       .select('id, title, description, due_at')
       .eq('done', false)
       .eq('reminder_sent', false)
-      .gte('due_at', windowStart)
-      .lte('due_at', windowEnd)
+      .gte('due_at', taskWindowStart)
+      .lte('due_at', taskWindowEnd)
 
     ;(out.tasks as Record<string, number>).matched = (tasks || []).length
     for (const t of tasks || []) {
