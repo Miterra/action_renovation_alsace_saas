@@ -132,6 +132,75 @@ export async function getMessage(id) {
   }
 }
 
+/** Décode une string base64url (format Gmail) en string UTF-8. */
+function decodeBase64Url(data) {
+  if (!data) return ''
+  try {
+    const padded = data.replace(/-/g, '+').replace(/_/g, '/')
+    const padding = '='.repeat((4 - (padded.length % 4)) % 4)
+    const decoded = atob(padded + padding)
+    // Convertir en UTF-8 (atob retourne du binary string)
+    const bytes = new Uint8Array(decoded.length)
+    for (let i = 0; i < decoded.length; i++) bytes[i] = decoded.charCodeAt(i)
+    return new TextDecoder('utf-8').decode(bytes)
+  } catch (e) {
+    console.warn('[gmail] decode base64url échoué :', e)
+    return ''
+  }
+}
+
+/** Parcourt récursivement le payload d'un mail pour extraire le HTML et/ou le plain text. */
+function extractBodies(payload) {
+  const result = { html: '', plain: '' }
+  if (!payload) return result
+
+  // Cas simple : feuille avec body.data
+  if (payload.body?.data) {
+    if (payload.mimeType === 'text/html') {
+      result.html = decodeBase64Url(payload.body.data)
+    } else if (payload.mimeType === 'text/plain' || payload.mimeType?.startsWith('text/')) {
+      result.plain = decodeBase64Url(payload.body.data)
+    }
+  }
+
+  // Cas multipart : parcourir les parts
+  if (Array.isArray(payload.parts)) {
+    for (const part of payload.parts) {
+      const sub = extractBodies(part)
+      if (!result.html && sub.html) result.html = sub.html
+      if (!result.plain && sub.plain) result.plain = sub.plain
+    }
+  }
+  return result
+}
+
+/** Récupère un mail complet avec son corps (text/html ou text/plain). */
+export async function getMessageFull(id) {
+  if (!isSignedIn()) throw new Error('Non connecté à Gmail.')
+  const res = await window.gapi.client.gmail.users.messages.get({
+    userId: 'me',
+    id,
+    format: 'full',
+  })
+  const payload = res.result.payload
+  const headers = payload?.headers || []
+  const get = (name) => headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value || ''
+  const { html, plain } = extractBodies(payload)
+  return {
+    id: res.result.id,
+    threadId: res.result.threadId,
+    snippet: res.result.snippet,
+    from: get('From'),
+    to: get('To'),
+    cc: get('Cc'),
+    subject: get('Subject'),
+    date: get('Date'),
+    html,
+    plain,
+    unread: (res.result.labelIds || []).includes('UNREAD'),
+  }
+}
+
 /** Récupère le contenu de la boîte (liste + détail des N derniers). */
 export async function fetchInbox(limit = 15) {
   const list = await listMessages({ maxResults: limit })
@@ -152,15 +221,33 @@ export const MOCK_INBOX = [
       'Bonjour, je souhaiterais obtenir un devis pour la rénovation complète de ma cuisine. Surface env. 18m². Disponible la semaine prochaine pour la visite…',
     date: 'Lun. 25 mai 2026 · 14:32',
     unread: true,
+    plain: `Bonjour,
+
+Je souhaiterais obtenir un devis pour la rénovation complète de ma cuisine.
+Surface env. 18m².
+
+Je suis disponible la semaine prochaine pour une visite. N'hésitez pas à me
+proposer un créneau.
+
+Cordialement,
+Marie Dupont
+06 12 34 56 78`,
   },
   {
     id: 'm2',
     from: 'Jean Müller <j.muller@orange.fr>',
     subject: 'Re: Confirmation RDV jeudi 28/05',
     snippet:
-      'Parfait, je confirme le RDV de jeudi à 10h. L\'adresse est 12 rue de la Forêt à Strasbourg. À jeudi !',
+      "Parfait, je confirme le RDV de jeudi à 10h. L'adresse est 12 rue de la Forêt à Strasbourg. À jeudi !",
     date: 'Lun. 25 mai 2026 · 11:08',
     unread: true,
+    plain: `Parfait, je confirme le RDV de jeudi à 10h.
+
+L'adresse est 12 rue de la Forêt à Strasbourg, au 2e étage.
+Code d'entrée : 4521B
+
+À jeudi !
+Jean`,
   },
   {
     id: 'm3',
@@ -170,6 +257,18 @@ export const MOCK_INBOX = [
       'Votre commande professionnelle est disponible au comptoir Pro de Strasbourg. Pensez à présenter votre carte…',
     date: 'Dim. 24 mai 2026 · 18:45',
     unread: false,
+    plain: `Bonjour,
+
+Votre commande professionnelle #4582 est disponible au comptoir Pro
+du magasin Castorama Strasbourg.
+
+Articles :
+- Carrelage Trento Beige 60x60 (12m²)
+- Colle C2 sac 25kg (x4)
+
+Pensez à présenter votre carte Pro à l'enlèvement.
+
+L'équipe Castorama Pro`,
   },
   {
     id: 'm4',
@@ -179,6 +278,20 @@ export const MOCK_INBOX = [
       'Bonsoir, comme convenu vous trouverez en pièce jointe les photos avant travaux de la salle de bain ainsi que le plan…',
     date: 'Sam. 23 mai 2026 · 20:12',
     unread: false,
+    plain: `Bonsoir,
+
+Comme convenu vous trouverez en pièce jointe les photos avant travaux
+de la salle de bain ainsi que le plan.
+
+Quelques précisions :
+- Surface au sol : 6,5 m²
+- Hauteur sous plafond : 2,40 m
+- L'arrivée d'eau passe derrière la cloison nord
+
+Dites-moi si vous avez besoin d'autres informations.
+
+Bien à vous,
+Sophie Klein`,
   },
   {
     id: 'm5',
@@ -188,5 +301,16 @@ export const MOCK_INBOX = [
       'Votre prochaine échéance arrive à expiration le 31 mai. Pensez à régulariser votre situation depuis votre espace…',
     date: 'Ven. 22 mai 2026 · 09:00',
     unread: false,
+    plain: `Bonjour,
+
+Votre prochaine échéance trimestrielle arrive à expiration le 31 mai 2026.
+
+Pensez à régulariser votre situation depuis votre espace en ligne :
+https://www.urssaf.fr/portail
+
+En cas de difficulté, contactez votre centre URSSAF.
+
+Cordialement,
+URSSAF Alsace`,
   },
 ]

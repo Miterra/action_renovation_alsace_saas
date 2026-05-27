@@ -6,6 +6,9 @@ import {
   LogOut,
   AlertTriangle,
   Inbox as InboxIcon,
+  X,
+  ArrowLeft,
+  ExternalLink,
 } from 'lucide-react'
 import {
   isGmailConfigured,
@@ -13,6 +16,7 @@ import {
   signOutGoogle,
   isSignedIn,
   fetchInbox,
+  getMessageFull,
   MOCK_INBOX,
 } from '../lib/gmail.js'
 
@@ -21,6 +25,7 @@ export default function Inbox() {
   const [connected, setConnected] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [selectedId, setSelectedId] = useState(null)
 
   useEffect(() => {
     setConnected(isSignedIn())
@@ -59,6 +64,7 @@ export default function Inbox() {
     signOutGoogle()
     setConnected(false)
     setMessages(MOCK_INBOX)
+    setSelectedId(null)
   }
 
   const unread = messages.filter((m) => m.unread).length
@@ -122,18 +128,28 @@ export default function Inbox() {
       ) : (
         <div className="card divide-y divide-navy-100">
           {messages.map((m) => (
-            <MessageRow key={m.id} message={m} />
+            <MessageRow key={m.id} message={m} onOpen={() => setSelectedId(m.id)} />
           ))}
         </div>
+      )}
+
+      {selectedId && (
+        <MessageDetailModal
+          messageId={selectedId}
+          fallback={messages.find((m) => m.id === selectedId)}
+          connected={connected}
+          onClose={() => setSelectedId(null)}
+        />
       )}
     </div>
   )
 }
 
-function MessageRow({ message }) {
+function MessageRow({ message, onOpen }) {
   return (
-    <article
-      className={`flex items-start gap-3 px-5 py-4 transition hover:bg-navy-50/40 cursor-pointer ${
+    <button
+      onClick={onOpen}
+      className={`w-full text-left flex items-start gap-3 px-5 py-4 transition hover:bg-navy-50/40 ${
         message.unread ? 'bg-accent-50/30' : ''
       }`}
     >
@@ -167,8 +183,176 @@ function MessageRow({ message }) {
       {message.unread && (
         <span className="w-2 h-2 rounded-full bg-accent-500 shrink-0 mt-2.5" />
       )}
-    </article>
+    </button>
   )
+}
+
+/* ============================================================
+ *  Modal de lecture d'un mail
+ * ============================================================ */
+function MessageDetailModal({ messageId, fallback, connected, onClose }) {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      setLoading(true)
+      setError(null)
+      try {
+        if (connected) {
+          // Vraie API Gmail : charger le corps complet
+          const full = await getMessageFull(messageId)
+          if (!cancelled) setData(full)
+        } else {
+          // Mode démo : utiliser le fallback déjà chargé
+          if (!cancelled) {
+            setData({
+              ...fallback,
+              html: fallback.html || '',
+              plain: fallback.plain || fallback.snippet || '',
+            })
+          }
+        }
+      } catch (e) {
+        if (!cancelled) setError(e.message || 'Impossible de charger ce mail.')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    load()
+    return () => {
+      cancelled = true
+    }
+  }, [messageId, connected, fallback])
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-stretch sm:items-center justify-center p-0 sm:p-4 bg-navy-950/40 backdrop-blur-sm animate-fade-in"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white w-full sm:max-w-2xl rounded-none sm:rounded-2xl shadow-card flex flex-col h-full sm:h-auto sm:max-h-[92vh] animate-slide-up"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div
+          className="sticky top-0 bg-white px-4 sm:px-6 py-4 border-b border-navy-100 flex items-center gap-3"
+          style={{ paddingTop: 'calc(env(safe-area-inset-top, 0px) + 1rem)' }}
+        >
+          <button
+            onClick={onClose}
+            className="p-1.5 -ml-1.5 rounded-lg hover:bg-navy-50"
+            aria-label="Fermer"
+          >
+            <ArrowLeft className="w-5 h-5 text-navy-700 sm:hidden" />
+            <X className="w-5 h-5 text-navy-700 hidden sm:block" />
+          </button>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-navy-900 truncate">
+              {data?.subject || fallback?.subject || '(sans objet)'}
+            </p>
+            <p className="text-xs text-navy-500 truncate">
+              {cleanName(data?.from || fallback?.from)} · {data?.date || fallback?.date}
+            </p>
+          </div>
+          {connected && data?.id && (
+            <a
+              href={`https://mail.google.com/mail/u/0/#inbox/${data.id}`}
+              target="_blank"
+              rel="noreferrer"
+              className="p-1.5 rounded-lg hover:bg-navy-50 text-navy-500"
+              title="Ouvrir dans Gmail"
+            >
+              <ExternalLink className="w-4 h-4" />
+            </a>
+          )}
+        </div>
+
+        {/* Corps */}
+        <div className="flex-1 overflow-y-auto">
+          {loading && (
+            <div className="p-8 text-center text-sm text-navy-500">
+              <RefreshCw className="w-5 h-5 mx-auto mb-2 animate-spin text-navy-300" />
+              Chargement du mail…
+            </div>
+          )}
+          {error && (
+            <div className="m-4 p-4 rounded-xl bg-red-50 border border-red-200 text-sm text-red-700">
+              {error}
+            </div>
+          )}
+          {!loading && !error && data && <MailBody data={data} />}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function MailBody({ data }) {
+  // Priorité au HTML (rendu propre dans iframe sandboxée), fallback texte brut
+  if (data.html) {
+    return (
+      <iframe
+        srcDoc={wrapHtml(data.html)}
+        sandbox="allow-popups allow-same-origin"
+        className="w-full min-h-[60vh] border-0"
+        title="Corps du mail"
+      />
+    )
+  }
+  if (data.plain) {
+    return (
+      <pre className="whitespace-pre-wrap p-5 sm:p-6 text-sm text-navy-800 font-sans leading-relaxed">
+        {data.plain}
+      </pre>
+    )
+  }
+  return (
+    <p className="p-6 text-sm text-navy-500 italic">
+      Ce mail n'a pas de contenu lisible (pièce jointe uniquement ?).
+    </p>
+  )
+}
+
+/** Wrappe le HTML du mail dans un document minimal avec styles propres. */
+function wrapHtml(html) {
+  return `<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<base target="_blank">
+<style>
+  body {
+    margin: 0;
+    padding: 20px;
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', system-ui, sans-serif;
+    font-size: 14px;
+    color: #0f2742;
+    line-height: 1.6;
+    word-wrap: break-word;
+  }
+  img { max-width: 100%; height: auto; }
+  a { color: #f97316; }
+  blockquote {
+    border-left: 3px solid #dbe5f1;
+    padding-left: 12px;
+    margin-left: 0;
+    color: #5a83b0;
+  }
+  pre, code {
+    background: #f1f3f7;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.9em;
+  }
+  table { max-width: 100%; }
+</style>
+</head>
+<body>${html}</body>
+</html>`
 }
 
 function cleanName(from) {
