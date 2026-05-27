@@ -1,2 +1,9 @@
+# Outil interne - aucune indexation autorisée
 User-agent: *
+Disallow: /
+
+User-agent: Googlebot
+Disallow: /
+
+User-agent: Bingbot
 Disallow: /

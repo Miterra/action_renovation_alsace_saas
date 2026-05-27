@@ -51,7 +51,7 @@ export default function TopBar({ onMenuClick }) {
           </button>
           <div>
             <p className="font-semibold text-navy-900 text-sm sm:text-base flex items-center gap-2">
-              {greeting()}, Halil
+              {greeting()}, Ermin
               {mode === 'supabase' && (
                 <span className="chip bg-emerald-50 text-emerald-700 text-[10px] py-0.5">
                   Sync ON
