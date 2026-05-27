@@ -1,22 +1,17 @@
 /* ============================================================
- *  Gestion des notifications PWA (iOS + Android + Desktop)
+ *  Gestion des notifications PWA — Web Push natif (sans Firebase)
+ *
+ *  Flux :
+ *    1. requestPermission()            → demande à l'utilisateur
+ *    2. subscribePush()                → Service Worker s'abonne (VAPID)
+ *    3. registerSubscription()         → POST dans Supabase
+ *    4. Edge Function send-reminders   → envoie le push à l'heure dite
+ *    5. SW reçoit le push              → affiche la notif (même app fermée)
  *
  *  iOS : depuis iOS 16.4, les Web Push fonctionnent UNIQUEMENT
- *  quand l'app est installée sur l'écran d'accueil (PWA).
- *  → on doit donc afficher un message d'aide si !standalone.
- *
- *  Architecture :
- *    1. requestPermission() → demande à l'utilisateur
- *    2. getFcmToken()       → token FCM à envoyer au backend
- *    3. (serveur)           → Cloud Function envoie une notif
- *    4. SW                  → reçoit le push et affiche la notif
- *
- *  En attendant FCM côté backend, scheduleLocalReminder() permet
- *  d'envoyer une notif locale via le Service Worker (utile pour
- *  les rappels de tâches/RDV traités côté client).
+ *  quand l'app est installée sur l'écran d'accueil (mode standalone).
  * ============================================================ */
-import { getMessagingClient, VAPID_KEY, isFirebaseConfigured } from './firebase'
-import { getToken, onMessage } from 'firebase/messaging'
+import { supabase, isSupabaseConfigured, VAPID_PUBLIC_KEY } from './supabase'
 
 export function isStandalone() {
   if (typeof window === 'undefined') return false
@@ -32,12 +27,17 @@ export function isIos() {
 }
 
 export function notificationsSupported() {
-  return typeof window !== 'undefined' && 'Notification' in window && 'serviceWorker' in navigator
+  return (
+    typeof window !== 'undefined' &&
+    'Notification' in window &&
+    'serviceWorker' in navigator &&
+    'PushManager' in window
+  )
 }
 
 export function getPermissionStatus() {
   if (!notificationsSupported()) return 'unsupported'
-  return Notification.permission // 'default' | 'granted' | 'denied'
+  return Notification.permission
 }
 
 /** Demande la permission au navigateur. À appeler depuis un clic utilisateur. */
@@ -47,48 +47,84 @@ export async function requestPermission() {
   }
   if (isIos() && !isStandalone()) {
     throw new Error(
-      'Sur iPhone, installe d\'abord l\'app sur ton écran d\'accueil (Partager → Sur l\'écran d\'accueil).',
+      "Sur iPhone, installe d'abord l'app sur ton écran d'accueil (Partager → Sur l'écran d'accueil).",
     )
   }
-  const permission = await Notification.requestPermission()
-  return permission
+  return await Notification.requestPermission()
 }
 
-/** Récupère un token FCM à stocker côté serveur pour envoyer des push ciblés. */
-export async function getFcmToken() {
-  if (!isFirebaseConfigured) {
-    console.info('[Notifications] Firebase non configuré → token FCM indisponible.')
-    return null
-  }
-  if (!VAPID_KEY) {
-    console.warn('[Notifications] VITE_FIREBASE_VAPID_KEY manquante.')
-    return null
-  }
-  const messaging = await getMessagingClient()
-  if (!messaging) return null
+/** Convertit une clé VAPID base64-url en Uint8Array (requis par PushManager). */
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4)
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
+  const raw = atob(base64)
+  return new Uint8Array([...raw].map((c) => c.charCodeAt(0)))
+}
 
-  try {
-    const registration = await navigator.serviceWorker.ready
-    const token = await getToken(messaging, {
-      vapidKey: VAPID_KEY,
-      serviceWorkerRegistration: registration,
+/** Abonne le navigateur au Push (ou retourne l'abo existant). */
+export async function subscribePush() {
+  if (!VAPID_PUBLIC_KEY) {
+    throw new Error('Clé VAPID publique manquante (VITE_VAPID_PUBLIC_KEY).')
+  }
+  const reg = await navigator.serviceWorker.ready
+  let sub = await reg.pushManager.getSubscription()
+  if (!sub) {
+    sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
     })
-    return token
-  } catch (err) {
-    console.error('[Notifications] Erreur récupération token FCM :', err)
+  }
+  return sub
+}
+
+/** Enregistre la subscription dans Supabase (idempotent via endpoint unique). */
+export async function registerSubscription(sub) {
+  if (!isSupabaseConfigured || !supabase) {
+    console.info('[Notifications] Supabase non configuré — subscription non enregistrée.')
     return null
+  }
+  const json = sub.toJSON()
+  const row = {
+    endpoint: json.endpoint,
+    p256dh: json.keys.p256dh,
+    auth: json.keys.auth,
+    user_agent: navigator.userAgent,
+    device_label: detectDevice(),
+  }
+  const { data, error } = await supabase
+    .from('push_subscriptions')
+    .upsert(row, { onConflict: 'endpoint' })
+    .select()
+    .single()
+  if (error) {
+    console.error('[Notifications] enregistrement Supabase échoué :', error)
+    return null
+  }
+  return data
+}
+
+function detectDevice() {
+  if (isIos()) return 'iPhone'
+  const ua = navigator.userAgent
+  if (/Android/.test(ua)) return 'Android'
+  if (/Mac/.test(ua)) return 'Mac'
+  if (/Windows/.test(ua)) return 'PC Windows'
+  return 'Navigateur'
+}
+
+/** Désabonnement complet (révoque côté navigateur + supprime côté Supabase). */
+export async function unsubscribePush() {
+  const reg = await navigator.serviceWorker.ready
+  const sub = await reg.pushManager.getSubscription()
+  if (!sub) return
+  const endpoint = sub.endpoint
+  await sub.unsubscribe()
+  if (isSupabaseConfigured && supabase) {
+    await supabase.from('push_subscriptions').delete().eq('endpoint', endpoint)
   }
 }
 
-/** Réception en foreground (app ouverte) — affiche une notif manuelle. */
-export async function listenForegroundMessages(handler) {
-  if (!isFirebaseConfigured) return () => {}
-  const messaging = await getMessagingClient()
-  if (!messaging) return () => {}
-  return onMessage(messaging, handler)
-}
-
-/** Notif locale immédiate via le SW (utile pour rappels traités côté client). */
+/** Test : affiche une notif locale via le SW (sans passer par le serveur). */
 export async function showLocalNotification({ title, body, tag, url }) {
   if (!notificationsSupported()) return
   if (Notification.permission !== 'granted') return
@@ -100,16 +136,19 @@ export async function showLocalNotification({ title, body, tag, url }) {
 }
 
 /**
- * Planifie un rappel local (timer côté client).
- * NOTE : ceci ne fonctionne que tant que l'onglet ou la PWA tourne.
- * Pour un vrai rappel "app fermée", il faut passer par FCM + backend
- * (Cloud Function planifiée qui envoie un push à l'heure dite).
+ * Workflow complet "Activer les notifs" → permission + subscribe + register.
+ * Retourne { ok, permission, subscription, error }.
  */
-export function scheduleLocalReminder({ title, body, tag, url, fireAt }) {
-  const delay = new Date(fireAt).getTime() - Date.now()
-  if (delay <= 0) return null
-  const handle = setTimeout(() => {
-    showLocalNotification({ title, body, tag, url })
-  }, delay)
-  return () => clearTimeout(handle)
+export async function enableNotifications() {
+  try {
+    const permission = await requestPermission()
+    if (permission !== 'granted') {
+      return { ok: false, permission, error: 'Permission refusée.' }
+    }
+    const sub = await subscribePush()
+    const stored = await registerSubscription(sub)
+    return { ok: true, permission, subscription: stored }
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) }
+  }
 }

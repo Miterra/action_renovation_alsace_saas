@@ -1,9 +1,10 @@
-import { createContext, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useContext, useEffect, useMemo, useState, useCallback } from 'react'
+import { repository, repoMode } from '../lib/repository'
 import { loadJSON, saveJSON } from '../lib/storage'
 
 const AppContext = createContext(null)
 
-// Données d'exemple pour démarrer l'app la première fois.
+// Données de démonstration injectées la 1ʳᵉ fois en mode local.
 const SEED_APPOINTMENTS = [
   {
     id: 'a1',
@@ -23,17 +24,7 @@ const SEED_APPOINTMENTS = [
     endDate: addDaysISO(1, 15, 0),
     notes: 'Métré salle de bain.',
   },
-  {
-    id: 'a3',
-    clientName: 'Sophie Klein',
-    address: '24 avenue de la Marseillaise, Strasbourg',
-    phone: '07 11 22 33 44',
-    date: addDaysISO(3, 11, 0),
-    endDate: addDaysISO(3, 12, 0),
-    notes: 'Présentation du devis final.',
-  },
 ]
-
 const SEED_TASKS = [
   {
     id: 't1',
@@ -51,14 +42,6 @@ const SEED_TASKS = [
     done: false,
     priority: 'medium',
   },
-  {
-    id: 't3',
-    title: 'Relancer fournisseur peinture',
-    description: 'Demander délai de livraison pour chantier Müller.',
-    dueDate: addDaysISO(-1, 16, 0),
-    done: true,
-    priority: 'low',
-  },
 ]
 
 function addDaysISO(offsetDays, hours, minutes) {
@@ -68,47 +51,89 @@ function addDaysISO(offsetDays, hours, minutes) {
   return d.toISOString()
 }
 
-function uid() {
-  return 'id-' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4)
-}
-
 export function AppProvider({ children }) {
-  const [appointments, setAppointments] = useState(() =>
-    loadJSON('appointments', SEED_APPOINTMENTS),
-  )
-  const [tasks, setTasks] = useState(() => loadJSON('tasks', SEED_TASKS))
+  const [appointments, setAppointments] = useState([])
+  const [tasks, setTasks] = useState([])
+  const [loading, setLoading] = useState(true)
   const [notifEnabled, setNotifEnabled] = useState(() => loadJSON('notifEnabled', false))
 
-  useEffect(() => saveJSON('appointments', appointments), [appointments])
-  useEffect(() => saveJSON('tasks', tasks), [tasks])
   useEffect(() => saveJSON('notifEnabled', notifEnabled), [notifEnabled])
+
+  // Seed local au premier lancement (mode démo uniquement)
+  useEffect(() => {
+    if (repoMode === 'local' && loadJSON('appointments', null) === null) {
+      saveJSON('appointments', SEED_APPOINTMENTS)
+      saveJSON('tasks', SEED_TASKS)
+    }
+  }, [])
+
+  const refresh = useCallback(async () => {
+    try {
+      const [a, t] = await Promise.all([
+        repository.listAppointments(),
+        repository.listTasks(),
+      ])
+      setAppointments(a)
+      setTasks(t)
+    } catch (e) {
+      console.error('[App] refresh échoué :', e)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    refresh()
+    if (repoMode === 'supabase') {
+      const sub = repository.subscribeRealtime(() => refresh())
+      return () => sub.unsubscribe()
+    }
+  }, [refresh])
 
   const api = useMemo(
     () => ({
       appointments,
       tasks,
+      loading,
+      mode: repoMode,
       notifEnabled,
       setNotifEnabled,
 
-      addAppointment: (payload) =>
-        setAppointments((prev) => [...prev, { id: uid(), ...payload }]),
-      updateAppointment: (id, patch) =>
-        setAppointments((prev) => prev.map((a) => (a.id === id ? { ...a, ...patch } : a))),
-      deleteAppointment: (id) =>
-        setAppointments((prev) => prev.filter((a) => a.id !== id)),
+      addAppointment: async (payload) => {
+        const created = await repository.createAppointment(payload)
+        setAppointments((prev) => [...prev, created].sort((a, b) => a.date.localeCompare(b.date)))
+      },
+      updateAppointment: async (id, patch) => {
+        const next = await repository.updateAppointment(id, patch)
+        setAppointments((prev) => prev.map((a) => (a.id === id ? { ...a, ...next } : a)))
+      },
+      deleteAppointment: async (id) => {
+        await repository.deleteAppointment(id)
+        setAppointments((prev) => prev.filter((a) => a.id !== id))
+      },
 
-      addTask: (payload) =>
-        setTasks((prev) => [
-          { id: uid(), done: false, priority: 'medium', ...payload },
-          ...prev,
-        ]),
-      toggleTask: (id) =>
-        setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, done: !t.done } : t))),
-      updateTask: (id, patch) =>
-        setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t))),
-      deleteTask: (id) => setTasks((prev) => prev.filter((t) => t.id !== id)),
+      addTask: async (payload) => {
+        const created = await repository.createTask(payload)
+        setTasks((prev) => [created, ...prev])
+      },
+      toggleTask: async (id) => {
+        const current = tasks.find((t) => t.id === id)
+        if (!current) return
+        const next = await repository.updateTask(id, { done: !current.done })
+        setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, ...next } : t)))
+      },
+      updateTask: async (id, patch) => {
+        const next = await repository.updateTask(id, patch)
+        setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, ...next } : t)))
+      },
+      deleteTask: async (id) => {
+        await repository.deleteTask(id)
+        setTasks((prev) => prev.filter((t) => t.id !== id))
+      },
+
+      refresh,
     }),
-    [appointments, tasks, notifEnabled],
+    [appointments, tasks, loading, notifEnabled, refresh],
   )
 
   return <AppContext.Provider value={api}>{children}</AppContext.Provider>

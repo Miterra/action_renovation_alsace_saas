@@ -2,15 +2,14 @@ import { Menu, Bell, BellOff } from 'lucide-react'
 import { useApp } from '../context/AppContext.jsx'
 import {
   getPermissionStatus,
-  requestPermission,
-  getFcmToken,
+  enableNotifications,
   isIos,
   isStandalone,
 } from '../lib/notifications.js'
 import { useState, useEffect } from 'react'
 
 export default function TopBar({ onMenuClick }) {
-  const { notifEnabled, setNotifEnabled } = useApp()
+  const { notifEnabled, setNotifEnabled, mode } = useApp()
   const [permission, setPermission] = useState('default')
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState(null)
@@ -22,24 +21,16 @@ export default function TopBar({ onMenuClick }) {
   async function handleEnable() {
     setBusy(true)
     setHint(null)
-    try {
-      const perm = await requestPermission()
-      setPermission(perm)
-      if (perm === 'granted') {
-        setNotifEnabled(true)
-        const token = await getFcmToken()
-        if (token) {
-          console.info('[Push] Token FCM :', token)
-          // TODO backend : POST /api/push/register { token }
-        }
-      } else {
-        setHint('Permission refusée.')
-      }
-    } catch (e) {
-      setHint(e.message)
-    } finally {
-      setBusy(false)
+    const res = await enableNotifications()
+    setPermission(getPermissionStatus())
+    if (res.ok) {
+      setNotifEnabled(true)
+      setHint('Notifications activées ✓ — un test push est planifié toutes les minutes.')
+      setTimeout(() => setHint(null), 4000)
+    } else {
+      setHint(res.error || 'Activation impossible.')
     }
+    setBusy(false)
   }
 
   const granted = permission === 'granted' && notifEnabled
@@ -59,8 +50,13 @@ export default function TopBar({ onMenuClick }) {
             <Menu className="w-5 h-5 text-navy-800" />
           </button>
           <div>
-            <p className="font-semibold text-navy-900 text-sm sm:text-base">
+            <p className="font-semibold text-navy-900 text-sm sm:text-base flex items-center gap-2">
               {greeting()}, Halil
+              {mode === 'supabase' && (
+                <span className="chip bg-emerald-50 text-emerald-700 text-[10px] py-0.5">
+                  Sync ON
+                </span>
+              )}
             </p>
             <p className="text-[11px] sm:text-xs text-navy-500">
               {new Date().toLocaleDateString('fr-FR', {
@@ -79,7 +75,7 @@ export default function TopBar({ onMenuClick }) {
             granted
               ? 'Notifications activées'
               : isIos() && !isStandalone()
-                ? 'Installe l\'app sur l\'écran d\'accueil pour activer les notifs (iOS)'
+                ? "Installe l'app sur l'écran d'accueil pour activer les notifs (iOS)"
                 : 'Activer les notifications'
           }
           className={`btn ${granted ? 'btn-ghost text-emerald-600' : 'btn-accent'} px-3 py-2`}

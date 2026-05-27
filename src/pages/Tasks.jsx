@@ -11,7 +11,8 @@ import {
 import { useApp } from '../context/AppContext.jsx'
 import { format, isPast, parseISO, isToday, isTomorrow } from 'date-fns'
 import { fr } from 'date-fns/locale'
-import { scheduleLocalReminder, getPermissionStatus } from '../lib/notifications.js'
+// NB : les rappels (15 min avant) sont désormais envoyés côté serveur par
+// l'Edge Function Supabase `send-reminders` qui s'exécute toutes les minutes.
 
 const FILTERS = [
   { key: 'all', label: 'Toutes' },
@@ -160,31 +161,21 @@ function NewTaskModal({ onClose, onSave }) {
     day: format(new Date(), 'yyyy-MM-dd'),
     time: '17:00',
     priority: 'medium',
-    reminder: false,
   })
 
   function submit(e) {
     e.preventDefault()
     if (!form.title) return
     const dueDate = new Date(`${form.day}T${form.time}:00`).toISOString()
-    const payload = {
+    onSave({
       title: form.title,
       description: form.description,
       dueDate,
       priority: form.priority,
-    }
-    onSave(payload)
-    // Planifier un rappel local si demandé + permission OK
-    if (form.reminder && getPermissionStatus() === 'granted') {
-      const fireAt = new Date(dueDate).getTime() - 15 * 60_000 // 15 min avant
-      scheduleLocalReminder({
-        title: `Rappel : ${form.title}`,
-        body: form.description || 'Échéance dans 15 minutes.',
-        tag: `task-${Date.now()}`,
-        url: '/tasks',
-        fireAt,
-      })
-    }
+    })
+    // Le rappel 15 min avant est envoyé automatiquement par l'Edge Function
+    // `send-reminders` (Supabase, cron toutes les minutes) si l'utilisateur a
+    // activé les notifications dans la TopBar.
   }
 
   return (
@@ -245,22 +236,15 @@ function NewTaskModal({ onClose, onSave }) {
             ))}
           </div>
         </div>
-        <label className="flex items-start gap-3 p-3 rounded-xl border border-navy-100 cursor-pointer hover:bg-navy-50/50">
-          <input
-            type="checkbox"
-            checked={form.reminder}
-            onChange={(e) => setForm({ ...form, reminder: e.target.checked })}
-            className="mt-1 accent-accent-500"
-          />
-          <span className="flex-1">
-            <span className="flex items-center gap-1.5 text-sm font-medium text-navy-900">
-              <Bell className="w-3.5 h-3.5" /> Me notifier 15 min avant
-            </span>
-            <span className="text-xs text-navy-500">
-              Rappel local — pour les rappels app fermée, configure Firebase FCM.
-            </span>
-          </span>
-        </label>
+        <div className="flex items-start gap-3 p-3 rounded-xl border border-navy-100 bg-navy-50/40">
+          <Bell className="w-4 h-4 mt-0.5 text-accent-600" />
+          <div className="flex-1">
+            <p className="text-sm font-medium text-navy-900">Rappel automatique</p>
+            <p className="text-xs text-navy-500">
+              Tu recevras une notification 15 min avant l'échéance (push envoyé par le serveur, même app fermée).
+            </p>
+          </div>
+        </div>
         <div className="flex gap-2 pt-2">
           <button type="button" onClick={onClose} className="btn-ghost flex-1">
             Annuler
