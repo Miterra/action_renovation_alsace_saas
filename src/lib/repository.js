@@ -20,6 +20,7 @@ const apptFromRow = (r) => ({
   endDate: r.end_at,
   notes: r.notes || '',
   reminderAt: r.reminder_at || null,
+  allDay: r.all_day ?? true,
 })
 
 const apptToRow = (a) => {
@@ -32,6 +33,7 @@ const apptToRow = (a) => {
     notes: a.notes || '',
   }
   if (a.reminderAt !== undefined) row.reminder_at = a.reminderAt
+  if (a.allDay !== undefined) row.all_day = a.allDay
   return row
 }
 
@@ -85,6 +87,7 @@ const supabaseRepo = {
     if (patch.endDate !== undefined) row.end_at = patch.endDate
     if (patch.notes !== undefined) row.notes = patch.notes
     if (patch.reminderAt !== undefined) row.reminder_at = patch.reminderAt
+    if (patch.allDay !== undefined) row.all_day = patch.allDay
     const { data, error } = await supabase
       .from('appointments')
       .update(row)

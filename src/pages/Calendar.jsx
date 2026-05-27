@@ -1,9 +1,19 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useCallback } from 'react'
 import { Calendar as RBCalendar, dateFnsLocalizer } from 'react-big-calendar'
-import { format, parse, startOfWeek, getDay, parseISO, subDays, formatISO } from 'date-fns'
+import {
+  format,
+  parse,
+  startOfWeek,
+  getDay,
+  parseISO,
+  subDays,
+  startOfDay,
+  endOfDay,
+  differenceInCalendarDays,
+} from 'date-fns'
 import { fr } from 'date-fns/locale'
 import 'react-big-calendar/lib/css/react-big-calendar.css'
-import { Plus, MapPin, Phone, X, Trash2, Pencil, Bell } from 'lucide-react'
+import { Plus, MapPin, Phone, X, Trash2, Pencil, Bell, CalendarRange } from 'lucide-react'
 import { useApp } from '../context/AppContext.jsx'
 
 const locales = { 'fr-FR': fr }
@@ -30,58 +40,119 @@ const messages = {
   tomorrow: 'Demain',
   today: "Aujourd'hui",
   agenda: 'Agenda',
-  noEventsInRange: 'Aucun RDV sur cette période.',
+  noEventsInRange: 'Aucune période sur cette plage.',
   showMore: (n) => `+ ${n} autres`,
 }
 
-/** Calcule le rappel par défaut : la veille à 20h, dans le fuseau local du navigateur. */
-function defaultReminderAt(startISO) {
-  const start = parseISO(startISO)
+/* ============================================================
+ *  Palette de couleurs pour distinguer les périodes du mois
+ *  Couleurs choisies pour bon contraste sur fond clair, accessibles,
+ *  et complémentaires (pas trop saturées pour rester pro).
+ * ============================================================ */
+const PALETTE = [
+  { bg: '#1f3856', border: '#0f2742', text: '#ffffff', name: 'Navy' },
+  { bg: '#f97316', border: '#c2410c', text: '#ffffff', name: 'Orange' },
+  { bg: '#0d9488', border: '#0f766e', text: '#ffffff', name: 'Teal' },
+  { bg: '#7c3aed', border: '#6d28d9', text: '#ffffff', name: 'Purple' },
+  { bg: '#db2777', border: '#be185d', text: '#ffffff', name: 'Pink' },
+  { bg: '#0891b2', border: '#0e7490', text: '#ffffff', name: 'Cyan' },
+  { bg: '#d97706', border: '#b45309', text: '#ffffff', name: 'Amber' },
+  { bg: '#dc2626', border: '#b91c1c', text: '#ffffff', name: 'Red' },
+  { bg: '#4f46e5', border: '#4338ca', text: '#ffffff', name: 'Indigo' },
+  { bg: '#65a30d', border: '#4d7c0f', text: '#ffffff', name: 'Lime' },
+]
+
+/** Construit un index "couleur par RDV" pour le mois affiché.
+ *  Chaque RDV reçoit une couleur distincte basée sur son ordre dans le mois. */
+function buildColorIndex(appointments) {
+  const byMonth = new Map() // 'YYYY-MM' → array of sorted ids
+  for (const a of appointments) {
+    const key = format(parseISO(a.date), 'yyyy-MM')
+    if (!byMonth.has(key)) byMonth.set(key, [])
+    byMonth.get(key).push(a)
+  }
+  const colorById = new Map()
+  for (const [, list] of byMonth) {
+    list
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .forEach((appt, idx) => {
+        colorById.set(appt.id, PALETTE[idx % PALETTE.length])
+      })
+  }
+  return colorById
+}
+
+function defaultReminderAtFromDay(startDay) {
+  // Veille à 20h, dans le fuseau local du navigateur
+  const start = new Date(`${startDay}T20:00:00`)
   const prevDay = subDays(start, 1)
-  prevDay.setHours(20, 0, 0, 0)
   return prevDay.toISOString()
 }
 
-/** Convertit un ISO UTC vers les valeurs date+heure locales pour des inputs HTML. */
-function isoToLocalParts(iso) {
-  if (!iso) return { day: '', time: '' }
-  const d = parseISO(iso)
-  return {
-    day: format(d, 'yyyy-MM-dd'),
-    time: format(d, 'HH:mm'),
-  }
+function isoToDay(iso) {
+  if (!iso) return ''
+  return format(parseISO(iso), 'yyyy-MM-dd')
+}
+
+function isoToTime(iso) {
+  if (!iso) return ''
+  return format(parseISO(iso), 'HH:mm')
 }
 
 export default function Calendar() {
   const { appointments, addAppointment, updateAppointment, deleteAppointment } = useApp()
   const [creating, setCreating] = useState(false)
-  const [editing, setEditing] = useState(null) // RDV en cours d'édition
+  const [editing, setEditing] = useState(null)
   const [selected, setSelected] = useState(null)
   const [view, setView] = useState('month')
   const [date, setDate] = useState(new Date())
 
+  const colorById = useMemo(() => buildColorIndex(appointments), [appointments])
+
   const events = useMemo(
     () =>
-      appointments.map((a) => ({
-        id: a.id,
-        title: a.clientName,
-        start: parseISO(a.date),
-        end: parseISO(a.endDate || a.date),
-        resource: a,
-      })),
+      appointments.map((a) => {
+        const start = parseISO(a.date)
+        const end = parseISO(a.endDate || a.date)
+        return {
+          id: a.id,
+          title: a.clientName,
+          start,
+          end,
+          allDay: a.allDay ?? true,
+          resource: a,
+        }
+      }),
     [appointments],
+  )
+
+  const eventPropGetter = useCallback(
+    (event) => {
+      const color = colorById.get(event.id) || PALETTE[0]
+      return {
+        style: {
+          backgroundColor: color.bg,
+          borderColor: color.border,
+          color: color.text,
+          borderRadius: '6px',
+          border: `1px solid ${color.border}`,
+          fontWeight: 500,
+        },
+      }
+    },
+    [colorById],
   )
 
   return (
     <div className="space-y-4 animate-fade-in">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl sm:text-2xl font-bold text-navy-900">Calendrier & RDV</h1>
-          <p className="text-sm text-navy-500">Planning des visites et chantiers.</p>
+          <h1 className="text-xl sm:text-2xl font-bold text-navy-900">Calendrier & Chantiers</h1>
+          <p className="text-sm text-navy-500">Périodes de chantier et rendez-vous clients.</p>
         </div>
         <button onClick={() => setCreating(true)} className="btn-accent">
           <Plus className="w-4 h-4" />
-          <span className="hidden sm:inline">Nouveau RDV</span>
+          <span className="hidden sm:inline">Nouvelle période</span>
         </button>
       </div>
 
@@ -100,6 +171,7 @@ export default function Calendar() {
             startAccessor="start"
             endAccessor="end"
             onSelectEvent={(ev) => setSelected(ev.resource)}
+            eventPropGetter={eventPropGetter}
             popup
             longPressThreshold={10}
             formats={{
@@ -133,6 +205,7 @@ export default function Calendar() {
       {selected && (
         <AppointmentDetailModal
           appointment={selected}
+          color={colorById.get(selected.id)}
           onClose={() => setSelected(null)}
           onEdit={() => {
             setEditing(selected)
@@ -149,7 +222,7 @@ export default function Calendar() {
 }
 
 /* ============================================================
- *  Modal Création/Édition de RDV
+ *  Modal Création/Édition de période
  * ============================================================ */
 function AppointmentFormModal({ appointment, onClose, onSave }) {
   const isEdit = Boolean(appointment)
@@ -160,51 +233,47 @@ function AppointmentFormModal({ appointment, onClose, onSave }) {
         clientName: '',
         address: '',
         phone: '',
-        day: today,
-        time: '09:00',
-        duration: '60',
+        allDay: true,
+        startDay: today,
+        endDay: today,
+        startTime: '09:00',
+        endTime: '17:00',
         notes: '',
-        reminderDay: format(subDays(new Date(today + 'T09:00'), 1), 'yyyy-MM-dd'),
+        reminderDay: format(subDays(new Date(`${today}T20:00`), 1), 'yyyy-MM-dd'),
         reminderTime: '20:00',
       }
     }
-    const start = isoToLocalParts(appointment.date)
-    const durMin = Math.round(
-      (parseISO(appointment.endDate || appointment.date).getTime() -
-        parseISO(appointment.date).getTime()) /
-        60_000,
-    )
-    const reminder = isoToLocalParts(
-      appointment.reminderAt || defaultReminderAt(appointment.date),
-    )
+    const startDay = isoToDay(appointment.date)
+    const endDay = isoToDay(appointment.endDate || appointment.date)
     return {
       clientName: appointment.clientName,
       address: appointment.address || '',
       phone: appointment.phone || '',
-      day: start.day,
-      time: start.time,
-      duration: String(durMin || 60),
+      allDay: appointment.allDay ?? true,
+      startDay,
+      endDay,
+      startTime: isoToTime(appointment.date) || '09:00',
+      endTime: isoToTime(appointment.endDate) || '17:00',
       notes: appointment.notes || '',
-      reminderDay: reminder.day,
-      reminderTime: reminder.time,
+      reminderDay: isoToDay(appointment.reminderAt || defaultReminderAtFromDay(startDay)),
+      reminderTime: isoToTime(appointment.reminderAt || defaultReminderAtFromDay(startDay)) || '20:00',
     }
   }, [appointment])
 
   const [form, setForm] = useState(initial)
-  // Quand on change la date/heure du RDV (mode création seulement),
-  // on recalcule le rappel par défaut automatiquement
   const [reminderTouched, setReminderTouched] = useState(isEdit)
 
   function update(k, v) {
     setForm((f) => {
       const next = { ...f, [k]: v }
-      // Si on change la date/heure du RDV et que le rappel n'a pas été touché,
-      // on aligne le rappel à "la veille à 20h"
-      if ((k === 'day' || k === 'time') && !reminderTouched) {
-        const startISO = `${k === 'day' ? v : f.day}T${k === 'time' ? v : f.time}:00`
-        const remParts = isoToLocalParts(defaultReminderAt(startISO))
-        next.reminderDay = remParts.day
-        next.reminderTime = remParts.time
+      // Si on change startDay : assurer que endDay >= startDay, et recalculer le rappel par défaut
+      if (k === 'startDay') {
+        if (next.endDay < v) next.endDay = v
+        if (!reminderTouched) {
+          const rem = defaultReminderAtFromDay(v)
+          next.reminderDay = isoToDay(rem)
+          next.reminderTime = '20:00'
+        }
       }
       return next
     })
@@ -218,25 +287,40 @@ function AppointmentFormModal({ appointment, onClose, onSave }) {
   function submit(e) {
     e.preventDefault()
     if (!form.clientName) return
-    const start = new Date(`${form.day}T${form.time}:00`)
-    const end = new Date(start.getTime() + Number(form.duration) * 60_000)
-    const reminder = new Date(`${form.reminderDay}T${form.reminderTime}:00`)
+
+    let startISO, endISO
+    if (form.allDay) {
+      // Période en mode "toute la journée" : du jour début 00:00 au jour fin 23:59:59 locaux
+      startISO = startOfDay(parseISO(form.startDay)).toISOString()
+      endISO = endOfDay(parseISO(form.endDay)).toISOString()
+    } else {
+      startISO = new Date(`${form.startDay}T${form.startTime}:00`).toISOString()
+      endISO = new Date(`${form.endDay}T${form.endTime}:00`).toISOString()
+    }
+    const reminder = new Date(`${form.reminderDay}T${form.reminderTime}:00`).toISOString()
+
     onSave({
       clientName: form.clientName,
       address: form.address,
       phone: form.phone,
-      date: start.toISOString(),
-      endDate: end.toISOString(),
+      date: startISO,
+      endDate: endISO,
+      allDay: form.allDay,
       notes: form.notes,
-      reminderAt: reminder.toISOString(),
+      reminderAt: reminder,
     })
   }
 
+  const nbDays = (() => {
+    if (!form.startDay || !form.endDay) return 1
+    return Math.max(1, differenceInCalendarDays(parseISO(form.endDay), parseISO(form.startDay)) + 1)
+  })()
+
   return (
-    <Modal title={isEdit ? 'Modifier le rendez-vous' : 'Nouveau rendez-vous client'} onClose={onClose}>
+    <Modal title={isEdit ? 'Modifier la période' : 'Nouvelle période / chantier'} onClose={onClose}>
       <form onSubmit={submit} className="space-y-3.5">
         <div>
-          <label className="label">Nom du client *</label>
+          <label className="label">Client *</label>
           <input
             className="input"
             value={form.clientName}
@@ -246,7 +330,7 @@ function AppointmentFormModal({ appointment, onClose, onSave }) {
           />
         </div>
         <div>
-          <label className="label">Adresse</label>
+          <label className="label">Adresse du chantier</label>
           <input
             className="input"
             value={form.address}
@@ -264,44 +348,78 @@ function AppointmentFormModal({ appointment, onClose, onSave }) {
             placeholder="06 12 34 56 78"
           />
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="label">Date *</label>
-            <input
-              className="input"
-              type="date"
-              value={form.day}
-              onChange={(e) => update('day', e.target.value)}
-              required
-            />
+
+        {/* Période : Du → Au */}
+        <div className="border border-navy-100 bg-navy-50/30 rounded-xl p-3 space-y-3">
+          <div className="flex items-center gap-2">
+            <CalendarRange className="w-4 h-4 text-navy-700" />
+            <span className="text-sm font-semibold text-navy-900">Période</span>
+            <span className="text-[11px] text-navy-500 ml-auto">
+              {nbDays} jour{nbDays > 1 ? 's' : ''}
+            </span>
           </div>
-          <div>
-            <label className="label">Heure *</label>
-            <input
-              className="input"
-              type="time"
-              value={form.time}
-              onChange={(e) => update('time', e.target.value)}
-              required
-            />
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label">Du *</label>
+              <input
+                className="input"
+                type="date"
+                value={form.startDay}
+                onChange={(e) => update('startDay', e.target.value)}
+                required
+              />
+            </div>
+            <div>
+              <label className="label">Au *</label>
+              <input
+                className="input"
+                type="date"
+                value={form.endDay}
+                min={form.startDay}
+                onChange={(e) => update('endDay', e.target.value)}
+                required
+              />
+            </div>
           </div>
-        </div>
-        <div>
-          <label className="label">Durée (min)</label>
-          <select
-            className="input"
-            value={form.duration}
-            onChange={(e) => update('duration', e.target.value)}
-          >
-            <option value="30">30 min</option>
-            <option value="60">1 h</option>
-            <option value="90">1 h 30</option>
-            <option value="120">2 h</option>
-            <option value="180">3 h</option>
-          </select>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={form.allDay}
+              onChange={(e) => update('allDay', e.target.checked)}
+              className="accent-accent-500"
+            />
+            <span className="text-sm text-navy-700">
+              Toute la journée
+              <span className="text-xs text-navy-500 ml-1">
+                (décocher pour RDV avec heures précises)
+              </span>
+            </span>
+          </label>
+          {!form.allDay && (
+            <div className="grid grid-cols-2 gap-3 pt-1">
+              <div>
+                <label className="label">Heure début</label>
+                <input
+                  className="input"
+                  type="time"
+                  value={form.startTime}
+                  onChange={(e) => update('startTime', e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="label">Heure fin</label>
+                <input
+                  className="input"
+                  type="time"
+                  value={form.endTime}
+                  onChange={(e) => update('endTime', e.target.value)}
+                />
+              </div>
+            </div>
+          )}
         </div>
 
-        {/* Bloc Rappel */}
+        {/* Rappel push */}
         <div className="border border-navy-100 bg-navy-50/30 rounded-xl p-3 space-y-2.5">
           <div className="flex items-center gap-2">
             <Bell className="w-4 h-4 text-accent-600" />
@@ -338,7 +456,7 @@ function AppointmentFormModal({ appointment, onClose, onSave }) {
             className="input min-h-[80px]"
             value={form.notes}
             onChange={(e) => update('notes', e.target.value)}
-            placeholder="Métré, devis, type de travaux…"
+            placeholder="Type de travaux, matériel à prévoir…"
           />
         </div>
         <div className="flex gap-2 pt-2">
@@ -346,7 +464,7 @@ function AppointmentFormModal({ appointment, onClose, onSave }) {
             Annuler
           </button>
           <button type="submit" className="btn-accent flex-1">
-            {isEdit ? 'Enregistrer' : 'Créer le RDV'}
+            {isEdit ? 'Enregistrer' : 'Créer la période'}
           </button>
         </div>
       </form>
@@ -355,22 +473,45 @@ function AppointmentFormModal({ appointment, onClose, onSave }) {
 }
 
 /* ============================================================
- *  Modal Détail RDV
+ *  Modal Détail période
  * ============================================================ */
-function AppointmentDetailModal({ appointment, onClose, onEdit, onDelete }) {
+function AppointmentDetailModal({ appointment, color, onClose, onEdit, onDelete }) {
+  const start = parseISO(appointment.date)
+  const end = parseISO(appointment.endDate || appointment.date)
+  const nbDays = differenceInCalendarDays(end, start) + 1
+  const allDay = appointment.allDay ?? true
+
   const reminderText = appointment.reminderAt
     ? format(parseISO(appointment.reminderAt), "EEEE d MMM 'à' HH'h'mm", { locale: fr })
     : 'Aucun rappel programmé'
 
+  let periodText
+  if (nbDays === 1) {
+    periodText = format(start, 'EEEE d MMMM yyyy', { locale: fr })
+    if (!allDay) {
+      periodText += ` · ${format(start, "HH'h'mm")} - ${format(end, "HH'h'mm")}`
+    }
+  } else {
+    periodText = `Du ${format(start, 'EEE d MMM', { locale: fr })} au ${format(end, 'EEE d MMM yyyy', { locale: fr })}`
+  }
+
   return (
     <Modal title={appointment.clientName} onClose={onClose}>
       <div className="space-y-3 text-sm">
-        <div className="bg-navy-50 rounded-xl px-4 py-3">
-          <p className="text-xs font-semibold uppercase text-navy-500 tracking-wider">Quand</p>
-          <p className="font-medium text-navy-900 mt-0.5">
-            {format(parseISO(appointment.date), "EEEE d MMMM yyyy · HH'h'mm", { locale: fr })}
-          </p>
-        </div>
+        {color && (
+          <div
+            className="rounded-xl px-4 py-3 flex items-center gap-3"
+            style={{ backgroundColor: color.bg + '15', borderLeft: `4px solid ${color.bg}` }}
+          >
+            <CalendarRange className="w-4 h-4" style={{ color: color.bg }} />
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider" style={{ color: color.border }}>
+                Période · {nbDays} jour{nbDays > 1 ? 's' : ''}
+              </p>
+              <p className="font-medium text-navy-900 mt-0.5 capitalize">{periodText}</p>
+            </div>
+          </div>
+        )}
 
         <div className="bg-accent-50 rounded-xl px-4 py-3 flex items-start gap-3">
           <Bell className="w-4 h-4 text-accent-600 mt-0.5 shrink-0" />
